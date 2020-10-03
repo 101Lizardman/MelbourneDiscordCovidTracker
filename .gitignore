@@ -1,0 +1,13 @@
+# Ignore any files that are included to help local execution
+*.bat
+Dockerfile
+
+# Exclude my (and your) environment variables of course
+*.env
+
+# Don't need anything that's been compiled
+bin/*
+obj/*
+
+# Don't need the vsconfig file as it may be run elsewhere
+/.vsconfig/*
