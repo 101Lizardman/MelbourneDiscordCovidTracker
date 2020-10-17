@@ -1,28 +1,30 @@
 ﻿using System;
 using System.Net;
-using System.IO;
 using Newtonsoft.Json.Linq;
 using System.Collections.Generic;
 using Discord.Webhook;
 using Discord;
 using System.Threading.Tasks;
+using System.Text;
+using ChoETL;
 
 namespace covidCounter
 {
     class Program
     {
-        private static string dataUrl = "https://services1.arcgis.com/vHnIGBHHqDR6y0CR/arcgis/rest/services/COVID19_Time_Series/FeatureServer/0/query?where=1%3D1&outFields=*&outSR=4326&f=json";
+        private static string dataUrl = "https://raw.githubusercontent.com/M3IT/COVID-19_Data/master/Data/COVID_AU_state.csv";
 
-        private static string envFile = ".env";
+        private static string envFile = ".dev.env";
 
         public class dataPoint {
-            public string timeStamp;
+            public DateTime dateTime;
             public int newCaseCount;
             public int deathCount;
         }
 
         static void Main(string[] args)
         {
+            
             Console.WriteLine("C'mon Victoria, let's get 'er done");
 
             Console.WriteLine("Gathering environment variables... ");
@@ -39,65 +41,25 @@ namespace covidCounter
             }      
 
             Console.Write("Getting health data from Guardian Australia API... ");
+
             string dataString = GetData(dataUrl);
+
             if (dataString == String.Empty) {
                 Console.WriteLine("Health API data not returned successfully or doesn't exist anymore :(");
                 return;
             } else {
                 Console.WriteLine("Received :)");
             }
-
+            
             Console.WriteLine("Parsing data...");
-            JObject dataObject = JObject.Parse(dataString);
-            JToken dataFeatures = dataObject["features"];
-            JToken dataAttributes;
-
-            List<dataPoint> dataPoints = new List<dataPoint>();
-
-            string timestamp;
-            int newCaseCount;
-            int deathCount;
-
-            foreach (JToken feature in dataFeatures) {
-                dataAttributes = feature.SelectToken("attributes");
-
-                timestamp = dataAttributes.SelectToken("Date").ToString();
-                Int32.TryParse(dataAttributes.SelectToken("VIC").ToString(), out newCaseCount);
-                Int32.TryParse(dataAttributes.SelectToken("VIC_Deaths").ToString(), out deathCount);
-
-                dataPoints.Add(new dataPoint {
-                    timeStamp = timestamp,
-                    newCaseCount = newCaseCount,
-                    deathCount = deathCount
-                });
-            }
-
-            dataPoint[] dataArray = dataPoints.ToArray();
-            System.DateTime epochTime = new DateTime(1970, 1, 1, 0, 0, 0, 0, System.DateTimeKind.Utc);
-            DateTime dataTime;
-            int index = dataArray.Length - 1;
-            int newCaseFortnightAverage = 0;
-            int deathFortnightAverage = 0;
-
-            for(int i = 0; i < 14; i++) {
-                newCaseCount = dataArray[index - i].newCaseCount - dataArray[index - i - 1].newCaseCount;
-                newCaseFortnightAverage += newCaseCount;
-                deathCount = dataArray[index - i].deathCount - dataArray[index - i - 1].deathCount;
-                deathFortnightAverage += deathCount;
-
-                dataTime = epochTime.AddMilliseconds(Convert.ToDouble(dataArray[index].timeStamp)).ToUniversalTime();
-            }
-
-            newCaseFortnightAverage = newCaseFortnightAverage / 14;
-            deathFortnightAverage = deathFortnightAverage / 14;
-            string endDate = epochTime.AddMilliseconds(Convert.ToDouble(dataArray[index].timeStamp)).ToUniversalTime().ToString("dddd, dd MMMM yyyy");
-            string startDate = epochTime.AddMilliseconds(Convert.ToDouble(dataArray[index - 13].timeStamp)).ToUniversalTime().ToString("dddd, dd MMMM yyyy");
+            Dictionary<string, string> data = ParseData(dataString);
 
             Console.WriteLine("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~");
             Console.WriteLine("Fortnightly averages for Covid-19 for Victoria, Australia");
-            Console.WriteLine("Between " + startDate + " and " + endDate );
-            Console.WriteLine("Average new cases: " + newCaseFortnightAverage);
-            Console.WriteLine("Average deaths: " + deathFortnightAverage);
+            Console.WriteLine("Between " + data["startDate"] + " and " + data["endDate"] );
+            Console.WriteLine("New cases today: " + data["newCasesToday"] );
+            Console.WriteLine("Average new cases: " + data["newCaseFortnightAverage"]);
+            Console.WriteLine("Average deaths: " + data["deathFortnightAverage"]);
             Console.WriteLine("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~");
 
             /*  Todo:
@@ -105,7 +67,74 @@ namespace covidCounter
             *   - Add celebrations for Melbournes reopening steps average tiers (5, 0)
             */
 
-            AnnounceToDiscord(discordWebhookUrls, newCaseFortnightAverage, deathFortnightAverage, startDate, endDate);
+            AnnounceToDiscord(discordWebhookUrls, data["newCaseFortnightAverage"], data["deathFortnightAverage"], data["newCasesToday"], data["startDate"], data["endDate"] );
+        }
+
+        public static Dictionary<string, string> ParseData(string dataString) {
+
+            Dictionary<string, string> returnData = new Dictionary<string, string>();
+            returnData.Add("startDate", "");
+            returnData.Add("endDate", "");
+            returnData.Add("newCasesToday", "");
+            returnData.Add("newCaseFortnightAverage", "");
+            returnData.Add("deathFortnightAverage", "");
+
+            // Data string is csv, parse to JSON instead
+            StringBuilder stringData = new StringBuilder();
+            stringData.Append("{\"data\":");
+            using (var p = ChoCSVReader.LoadText(dataString).WithFirstLineHeader()) {
+                using (var w = new ChoJSONWriter(stringData)) {
+                    w.Write(p);
+                }
+            }
+            stringData.Append("}");
+
+            JObject dataObject = JObject.Parse(stringData.ToString());
+            JToken dataToken = dataObject["data"];
+            JEnumerable<JToken> dataUnits = dataToken.Children();
+
+            List<dataPoint> dataPoints = new List<dataPoint>();
+            int newCaseCount;
+            int deathCount;
+
+            foreach (JToken token in dataUnits) {
+                // Filter out any data that's not for Vic
+                if (token.SelectToken("state").ToString() != "\\\"Victoria\\\"") continue;
+
+                Int32.TryParse(token.SelectToken("confirmed").ToString(), out newCaseCount);
+                Int32.TryParse(token.SelectToken("deaths").ToString(), out deathCount);
+
+                dataPoints.Add(new dataPoint {
+                    dateTime = DateTime.Parse(token.SelectToken("date").ToString()),
+                    newCaseCount = newCaseCount,
+                    deathCount = deathCount
+                });
+            }
+
+            foreach (dataPoint data in dataPoints) {
+                Console.WriteLine(data.dateTime + " " + data.newCaseCount + " " + data.deathCount);
+            }
+
+            dataPoint[] dataArray = dataPoints.ToArray();
+
+            int index = dataArray.Length - 1;
+            double newCaseFortnightAverage = 0;
+            double deathFortnightAverage = 0;
+
+            for(int i = 0; i < 13; i++) {
+                newCaseCount = dataArray[index - i].newCaseCount;
+                newCaseFortnightAverage += newCaseCount;
+                deathCount = dataArray[index - i].deathCount;
+                deathFortnightAverage += deathCount;
+            }
+
+            returnData["newCaseFortnightAverage"] = Math.Round(newCaseFortnightAverage / 14, 1).ToString();
+            returnData["deathFortnightAverage"] = Math.Round(deathFortnightAverage / 14, 1).ToString();
+            returnData["endDate"] = dataArray[index].dateTime.ToString("dddd, dd MMMM yyyy");
+            returnData["startDate"] = dataArray[index - 13].dateTime.ToString("dddd, dd MMMM yyyy");
+            returnData["newCasesToday"] = dataArray[index].newCaseCount.ToString();
+
+            return returnData;
         }
 
         public static string GetData(string url)
@@ -115,11 +144,11 @@ namespace covidCounter
             return response;
         }
 
-        public static void AnnounceToDiscord(string[] discordWebhookUrls, int newCaseFortnightAverage, int deathFortnightAverage, string startDate, string endDate) 
+        public static void AnnounceToDiscord(string[] discordWebhookUrls, string newCaseFortnightAverage, string deathFortnightAverage, string newCase24Hours, string startDate, string endDate) 
         {
             Console.WriteLine("Announcing to " + discordWebhookUrls.Length + " Discord channels");
 
-            var embed = ConstructEmbed(newCaseFortnightAverage, deathFortnightAverage, startDate, endDate);
+            var embed = ConstructEmbed(newCaseFortnightAverage, deathFortnightAverage, newCase24Hours, startDate, endDate);
 
             for (int i = 0; i < discordWebhookUrls.Length; i++) {
                 Console.WriteLine(discordWebhookUrls[i]);
@@ -141,7 +170,7 @@ namespace covidCounter
             }
         }
 
-        public static Embed ConstructEmbed(int newCaseFortnightAverage, int deathFortnightAverage, string startDate, string endDate) 
+        public static Embed ConstructEmbed(string newCaseFortnightAverage, string deathFortnightAverage, string newCase24Hours, string startDate, string endDate) 
         {
             Console.Write("Constructing Discord embed... ");
 
@@ -157,12 +186,16 @@ namespace covidCounter
             .WithValue("\u200B");
 
             var newCasesField = new EmbedFieldBuilder()
-            .WithName("Average new cases:")
+            .WithName("New cases in the last 24 hours:")
+            .WithValue("`" + newCase24Hours + "`");
+
+            var aveNewCasesField = new EmbedFieldBuilder()
+            .WithName("Average of new cases:")
             .WithValue("`" + newCaseFortnightAverage + "`")
             .WithIsInline(true);
 
-            var deathsField = new EmbedFieldBuilder()
-            .WithName("Average deaths:")
+            var aveDeathsField = new EmbedFieldBuilder()
+            .WithName("Average of deaths:")
             .WithValue("`" + deathFortnightAverage + "`")
             .WithIsInline(true);
 
@@ -177,7 +210,8 @@ namespace covidCounter
             List<EmbedFieldBuilder> fields = new List<EmbedFieldBuilder>() {
                 emptySpace,
                 newCasesField,
-                deathsField,
+                aveNewCasesField,
+                aveDeathsField,
                 emptySpace,
                 dataField,
                 reopeningField
