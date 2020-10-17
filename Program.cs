@@ -1,5 +1,7 @@
 ﻿using System;
 using System.Net;
+using System.Web;
+using System.Text.RegularExpressions;
 using Newtonsoft.Json.Linq;
 using System.Collections.Generic;
 using Discord.Webhook;
@@ -13,6 +15,8 @@ namespace covidCounter
     class Program
     {
         private static string dataUrl = "https://raw.githubusercontent.com/M3IT/COVID-19_Data/master/Data/COVID_AU_state.csv";
+
+        private static string transmissionDataUrl = "https://www.dhhs.vic.gov.au/averages-easing-restrictions-covid-19";
 
         private static string envFile = ".dev.env";
 
@@ -50,9 +54,26 @@ namespace covidCounter
             } else {
                 Console.WriteLine("Received :)");
             }
+
+            Console.Write("Attempting to scrape transmission data straight from DHHS' page because they don't include this data in their api for unknown reasons... ");
+            Dictionary<string, string> transmissionData = new Dictionary<string, string>();
+            try {
+                transmissionData = ScrapeTranmissionData(transmissionDataUrl);
+                Console.WriteLine("Doneski");
+            } catch (Exception) {
+                Console.WriteLine("Failed");
+            }
+            
             
             Console.WriteLine("Parsing data...");
-            Dictionary<string, string> data = ParseData(dataString);
+            Dictionary<string, string> data = new Dictionary<string, string>();
+            try {
+                data = ParseData(dataString);
+                Console.WriteLine("All good");
+            } catch (Exception) {
+                Console.WriteLine("Failed");
+            }
+            
 
             Console.WriteLine("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~");
             Console.WriteLine("Fortnightly averages for Covid-19 for Victoria, Australia");
@@ -60,6 +81,9 @@ namespace covidCounter
             Console.WriteLine("New cases today: " + data["newCasesToday"] );
             Console.WriteLine("Average new cases: " + data["newCaseFortnightAverage"]);
             Console.WriteLine("Average deaths: " + data["deathFortnightAverage"]);
+            if (!transmissionData.IsNullOrEmpty()) {
+                Console.WriteLine("Unknown source transmissions " + transmissionData["dateString"] + ": " + transmissionData["numberCasesUnknownSource"]);
+            }
             Console.WriteLine("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~");
 
             /*  Todo:
@@ -67,7 +91,48 @@ namespace covidCounter
             *   - Add celebrations for Melbournes reopening steps average tiers (5, 0)
             */
 
-            AnnounceToDiscord(discordWebhookUrls, data["newCaseFortnightAverage"], data["deathFortnightAverage"], data["newCasesToday"], data["startDate"], data["endDate"] );
+            AnnounceToDiscord(discordWebhookUrls, data["newCaseFortnightAverage"], data["deathFortnightAverage"], data["newCasesToday"], data["startDate"], data["endDate"], transmissionData["dateString"], transmissionData["numberCasesUnknownSource"] );
+        }
+
+        public static Dictionary<string, string> ScrapeTranmissionData(string transmissionDataUrl) {
+
+            // This is a really dirty scrape that I'm not proud of
+            // It's very flimsy, so if it fails, so be it
+
+            Dictionary<string, string> returnData = new Dictionary<string, string>();
+            returnData.Add("dateString", "");
+            returnData.Add("numberCasesUnknownSource", "");
+
+            string transmissionDataString = GetData(transmissionDataUrl);
+
+            // Get the data first
+            string dataSearchString = "Number of cases - unknown source";
+            
+            int dataIndex = transmissionDataString.IndexOf(dataSearchString);
+            
+            if (dataIndex <= 0) throw new Exception();
+
+            string subString = transmissionDataString.Substring(dataIndex);
+
+            // Use regex to find first number
+            string regexPattern = "[0-9].";
+            string transmissionData = Regex.Match(subString, regexPattern).ToString();
+            returnData["numberCasesUnknownSource"] = transmissionData;
+
+            // Now grab the dates
+            dataSearchString = "For the last 14 days ";
+            dataIndex = transmissionDataString.IndexOf(dataSearchString, transmissionDataString.IndexOf(dataSearchString) + 1);
+
+            if (dataIndex <= 0) throw new Exception();
+            subString = transmissionDataString.Substring(dataIndex);
+
+            regexPattern = "\\(.*\\)";
+            string transmissionDateString = Regex.Match(subString, regexPattern).ToString();
+
+            transmissionDateString = HttpUtility.HtmlDecode(transmissionDateString);
+            returnData["dateString"] = transmissionDateString;
+
+            return returnData;
         }
 
         public static Dictionary<string, string> ParseData(string dataString) {
@@ -111,10 +176,6 @@ namespace covidCounter
                 });
             }
 
-            foreach (dataPoint data in dataPoints) {
-                Console.WriteLine(data.dateTime + " " + data.newCaseCount + " " + data.deathCount);
-            }
-
             dataPoint[] dataArray = dataPoints.ToArray();
 
             int index = dataArray.Length - 1;
@@ -144,11 +205,11 @@ namespace covidCounter
             return response;
         }
 
-        public static void AnnounceToDiscord(string[] discordWebhookUrls, string newCaseFortnightAverage, string deathFortnightAverage, string newCase24Hours, string startDate, string endDate) 
+        public static void AnnounceToDiscord(string[] discordWebhookUrls, string newCaseFortnightAverage, string deathFortnightAverage, string newCase24Hours, string startDate, string endDate, string transmissionDateRange, string unknownCases) 
         {
             Console.WriteLine("Announcing to " + discordWebhookUrls.Length + " Discord channels");
 
-            var embed = ConstructEmbed(newCaseFortnightAverage, deathFortnightAverage, newCase24Hours, startDate, endDate);
+            var embed = ConstructEmbed(newCaseFortnightAverage, deathFortnightAverage, newCase24Hours, startDate, endDate, transmissionDateRange, unknownCases);
 
             for (int i = 0; i < discordWebhookUrls.Length; i++) {
                 Console.WriteLine(discordWebhookUrls[i]);
@@ -170,7 +231,7 @@ namespace covidCounter
             }
         }
 
-        public static Embed ConstructEmbed(string newCaseFortnightAverage, string deathFortnightAverage, string newCase24Hours, string startDate, string endDate) 
+        public static Embed ConstructEmbed(string newCaseFortnightAverage, string deathFortnightAverage, string newCase24Hours, string startDate, string endDate, string transmissionDateRange, string unknownCases) 
         {
             Console.Write("Constructing Discord embed... ");
 
@@ -185,37 +246,50 @@ namespace covidCounter
             .WithName("\u200B")
             .WithValue("\u200B");
 
+            List<EmbedFieldBuilder> fields = new List<EmbedFieldBuilder>();
+
+            fields.Add(emptySpace);
+
+            var aveNewCasesField = new EmbedFieldBuilder()
+            .WithName("Average new cases:")
+            .WithValue("`" + newCaseFortnightAverage + "`");
+
+            fields.Add(aveNewCasesField);
+
+            var aveDeathsField = new EmbedFieldBuilder()
+            .WithName("Average deaths:")
+            .WithValue("`" + deathFortnightAverage + "`");
+
+            fields.Add(aveDeathsField);
+            fields.Add(emptySpace);
+
             var newCasesField = new EmbedFieldBuilder()
             .WithName("New cases in the last 24 hours:")
             .WithValue("`" + newCase24Hours + "`");
 
-            var aveNewCasesField = new EmbedFieldBuilder()
-            .WithName("Average of new cases:")
-            .WithValue("`" + newCaseFortnightAverage + "`")
-            .WithIsInline(true);
+            fields.Add(newCasesField);
 
-            var aveDeathsField = new EmbedFieldBuilder()
-            .WithName("Average of deaths:")
-            .WithValue("`" + deathFortnightAverage + "`")
-            .WithIsInline(true);
+            if (!transmissionDateRange.IsNullOrEmpty() && !unknownCases.IsNullOrEmpty()) {
+                var unknownTransmissionField = new EmbedFieldBuilder()
+                .WithName("Unknown source tranmissions ")
+                .WithValue(transmissionDateRange + ": `" + unknownCases + "`");
+
+                fields.Add(unknownTransmissionField);
+            }
+
+            fields.Add(emptySpace);
 
             var dataField = new EmbedFieldBuilder()
-            .WithName("📉 Data gathered from")
-            .WithValue("[Guardian Australia](https://covid19-esriau.hub.arcgis.com/datasets/current-cases-deaths-tests-by-state)");
+            .WithName("📉 Data gathered by volunteers from ")
+            .WithValue("[covid19data.com.au](https://www.covid19data.com.au)");
+
+            fields.Add(dataField);
 
             var reopeningField = new EmbedFieldBuilder()
-            .WithName("Checkout")
-            .WithValue("[Melbourne's reopening steps](https://www.coronavirus.vic.gov.au/coronavirus-covid-19-reopening-roadmap-metro-melbourne)");
+            .WithName("Keen to get back out and about?")
+            .WithValue("Checkout [Melbourne's reopening steps](https://www.coronavirus.vic.gov.au/coronavirus-covid-19-reopening-roadmap-metro-melbourne)");
             
-            List<EmbedFieldBuilder> fields = new List<EmbedFieldBuilder>() {
-                emptySpace,
-                newCasesField,
-                aveNewCasesField,
-                aveDeathsField,
-                emptySpace,
-                dataField,
-                reopeningField
-            };
+            fields.Add(reopeningField);
 
             var embed = new EmbedBuilder()
             .WithTitle("Fortnightly averages for Covid-19 for Victoria, Australia")

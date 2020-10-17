@@ -6,6 +6,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="ChoETL.JSON" Version="1.2.1.1" />
     <PackageReference Include="discord.net" Version="2.2.0" />
     <PackageReference Include="DotNetEnv" Version="1.4.0" />
     <PackageReference Include="Newtonsoft.Json" Version="12.0.3" />
