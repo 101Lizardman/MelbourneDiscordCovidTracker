@@ -61,6 +61,8 @@ namespace covidCounter
                 transmissionData = ScrapeTranmissionData(transmissionDataUrl);
                 Console.WriteLine("Doneski");
             } catch (Exception) {
+                transmissionData["dateString"] = "";
+                transmissionData["numberCasesUnknownSource"] = "";
                 Console.WriteLine("Failed");
             }
             
@@ -91,7 +93,15 @@ namespace covidCounter
             *   - Add celebrations for Melbournes reopening steps average tiers (5, 0)
             */
 
-            AnnounceToDiscord(discordWebhookUrls, data["newCaseFortnightAverage"], data["deathFortnightAverage"], data["newCasesToday"], data["startDate"], data["endDate"], transmissionData["dateString"], transmissionData["numberCasesUnknownSource"] );
+            AnnounceToDiscord(
+                discordWebhookUrls,
+                data["newCaseFortnightAverage"],
+                data["deathFortnightAverage"],
+                data["newCasesToday"],
+                data["startDate"],
+                data["endDate"],
+                transmissionData["dateString"].IsNullOrEmpty() ? "" : transmissionData["dateString"],
+                transmissionData["numberCasesUnknownSource"].IsNullOrEmpty() ? "" : transmissionData["numberCasesUnknownSource"] );
         }
 
         public static Dictionary<string, string> ScrapeTranmissionData(string transmissionDataUrl) {
@@ -205,8 +215,17 @@ namespace covidCounter
             return response;
         }
 
-        public static void AnnounceToDiscord(string[] discordWebhookUrls, string newCaseFortnightAverage, string deathFortnightAverage, string newCase24Hours, string startDate, string endDate, string transmissionDateRange, string unknownCases) 
+        public static void AnnounceToDiscord(
+            string[] discordWebhookUrls, 
+            string newCaseFortnightAverage, 
+            string deathFortnightAverage, 
+            string newCase24Hours, 
+            string startDate, 
+            string endDate, 
+            string transmissionDateRange, 
+            string unknownCases) 
         {
+            Console.WriteLine("blah");
             Console.WriteLine("Announcing to " + discordWebhookUrls.Length + " Discord channels");
 
             var embed = ConstructEmbed(newCaseFortnightAverage, deathFortnightAverage, newCase24Hours, startDate, endDate, transmissionDateRange, unknownCases);
@@ -261,7 +280,7 @@ namespace covidCounter
             .WithValue("`" + deathFortnightAverage + "`");
 
             fields.Add(aveDeathsField);
-            fields.Add(emptySpace);
+            //fields.Add(emptySpace);
 
             var newCasesField = new EmbedFieldBuilder()
             .WithName("New cases in the last 24 hours:")
